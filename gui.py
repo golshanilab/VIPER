@@ -10,7 +10,7 @@
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 import tifffile as tif
-from VIPER.ImportData import import_data
+#from VIPER.ImportData import import_data
 import os
 import stat
 import shutil # Folder removal so we don't have to write code with os that recursively does it
@@ -21,6 +21,7 @@ import numpy as np
 #from VIPER.TraceExtraction import trace_extraction, initial_ext
 import csv
 import scipy.io as sio
+from scipy import ndimage
 from Cellpose.cellpose_run import CellposeRunner, context_region
 import subprocess
 from rechunker import rechunk
@@ -729,20 +730,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.segmentedContours.getView().invertY(True)
         self.segmentedContours.getView().setMouseEnabled(x=False, y=False)
 
-        self.verticalLineDivider = QtWidgets.QFrame()
-        self.verticalLineDivider.setFrameShape(QtWidgets.QFrame.VLine)
-        self.verticalLineDivider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        self.verticalLineDivider.setObjectName("verticalLineDivider")
+        # self.verticalLineDivider = QtWidgets.QFrame()
+        # self.verticalLineDivider.setFrameShape(QtWidgets.QFrame.VLine)
+        # self.verticalLineDivider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        # self.verticalLineDivider.setObjectName("verticalLineDivider")
         
         
-        self.segmentedROIs  = pg.ImageView()
-        self.segmentedROIs.ui.roiBtn.hide()
-        self.segmentedROIs.ui.roiPlot.hide()
-        self.segmentedROIs.ui.menuBtn.hide()
-        self.segmentedROIs.ui.histogram.hide()
-        self.segmentedROIs.setObjectName("segmentedROIs")
-        self.segmentedROIs.getView().invertY(True)
-        self.segmentedROIs.getView().setMouseEnabled(x=False, y=False)
+        # self.segmentedROIs  = pg.ImageView()
+        # self.segmentedROIs.ui.roiBtn.hide()
+        # self.segmentedROIs.ui.roiPlot.hide()
+        # self.segmentedROIs.ui.menuBtn.hide()
+        # self.segmentedROIs.ui.histogram.hide()
+        # self.segmentedROIs.setObjectName("segmentedROIs")
+        # self.segmentedROIs.getView().invertY(True)
+        # self.segmentedROIs.getView().setMouseEnabled(x=False, y=False)
     def setupSegmentationTabModelSelect(self):
         # self.manualSegment = QtWidgets.QPushButton(self.SegmentationTab)
         # self.manualSegment.setObjectName("manualSegment")
@@ -777,6 +778,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.applyModel = QtWidgets.QPushButton(self.SegmentationTab)
         self.applyModel.setObjectName("applyModel")
         self.applyModel.setFont(self.font)
+
+        self.FOV = QtWidgets.QPushButton(self.SegmentationTab)
+        self.FOV.setObjectName("FOV")
+        self.FOV.setFont(self.font)
+
     def setupSegmentationTabExtractTrace(self):
         self.extractTraceButton = QtWidgets.QPushButton(self.SegmentationTab)
         self.extractTraceButton.setObjectName("extractTraceButton")
@@ -787,16 +793,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.modelLayout.setObjectName("modelLayout")
     def addtoSegmentationTabFrame(self):
         # Add the two plots at the top next to each other with a divider in between
-        self.segmentFrameLayout.addWidget(self.segmentedContours, 0, 0, 4, 4)
-        self.segmentFrameLayout.addWidget(self.verticalLineDivider, 0, 4, 4, 1)
-        self.segmentFrameLayout.addWidget(self.segmentedROIs, 0, 5, 4, 4)
+        self.segmentFrameLayout.addWidget(self.segmentedContours, 0, 0, 6, 9)
+        #self.segmentFrameLayout.addWidget(self.verticalLineDivider, 0, 4, 4, 1)
+        #self.segmentFrameLayout.addWidget(self.segmentedROIs, 0, 5, 4, 4)
 
         # Add the modelState dropdown, the selectModel button, the reset button, and the Segment button in the same row
-        self.segmentFrameLayout.addWidget(self.modelState, 5, 0, 4, 1)
-        self.segmentFrameLayout.addWidget(self.selectModel, 5, 1, 4, 1)
-        self.segmentFrameLayout.addWidget(self.resetPoints, 5, 1, 4, 1)
-        self.segmentFrameLayout.addWidget(self.pathToModelLabel, 5, 2, 4, 5)
-        self.segmentFrameLayout.addWidget(self.applyModel, 5, 8, 4, 1)
+        self.segmentFrameLayout.addWidget(self.modelState, 7, 0, 4, 1)
+        self.segmentFrameLayout.addWidget(self.selectModel, 7, 1, 4, 1)
+        self.segmentFrameLayout.addWidget(self.resetPoints, 7, 1, 4, 1)
+        self.segmentFrameLayout.addWidget(self.pathToModelLabel, 7, 2, 4, 5)
+        self.segmentFrameLayout.addWidget(self.applyModel, 7, 7, 4, 1)
+        self.segmentFrameLayout.addWidget(self.FOV, 7, 8, 4, 1)
 
         # Add the next button at the very bottom
         self.segmentFrameLayout.addWidget(self.extractTraceButton, 9, 0, 1, 1)
@@ -986,6 +993,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.selectModel.clicked.connect(self.openModelDialog)
         # self.manualSegment.clicked.connect(self.manual_segment)
         self.applyModel.clicked.connect(self.segment_data)
+        self.FOV.clicked.connect(self.view_FOV)
         self.extractTraceButton.clicked.connect(self.extract_trace)
         self.modelState.currentIndexChanged.connect(self.updateButtons)
         self.resetPoints.clicked.connect(self.reset_points)
@@ -1172,15 +1180,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.importDataThread = ImportDataThread(self.importFilePath, self.tempFolderPath, int(self.downsamplingInput.currentText()), self.GPU_mode)
         self.importDataClicked = True
         self.importDataThread.finished.connect(self.dataImportedDialog)
-        self.importDataThread.error.connect(self.dataImportErrorDialog)
+        #self.importDataThread.error.connect(self.dataImportErrorDialog)
         
         #self.importDataThread.progress.connect(self.dataImportProgressUpdate)
         self.importDataThread.start()
 
 
-    def dataImportedDialog(self, rawDataDict):
-        self.rawData = rawDataDict['MappedData']
-        self.chunkInfo = np.array([rawDataDict['MaxChunkMem'],rawDataDict['ChunkNum'],rawDataDict['FramesPerChunk']])
+    def dataImportedDialog(self):
+        rawFilePath = os.path.join(self.tempFolderPath, "raw_map.zarr")
+        self.rawData = zarr.open_array(rawFilePath, mode='a')# Open the raw data zarr file
         self.dataSize = len(self.rawData) # We must store the size so when we display the preview it doesn't lag when computing frame indices...
         self.mediaSlider_2.setEnabled(True)
         self.mediaTimeLabel_2.setText(f"Time: 0s/{self.dataSize // self.frameRateSpinBox.value()}s") # First frame
@@ -1492,9 +1500,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 n_min = int(qrec.left())
                 n_max = int(qrec.right())
                 small = self.rois[i].renderShapeMask(m_max-m_min, n_max-n_min)
-                self.binaryROIs[i,m_min:m_max,n_min:n_max] = small*self.averageImageRegistered[m_min:m_max,n_min:n_max]
+                mask = self.averageImageRegistered[m_min:m_max,n_min:n_max]
+                max_def = ndimage.gaussian_filter(mask, sigma=3)  # Smooth the mask
+                mask = mask/np.amax(max_def)  # Normalize the mask
+                mask[mask < (1/2)] = 0
+                mask = mask/np.amax(mask)  # Normalize the mask again
+                self.binaryROIs[i,m_min:m_max,n_min:n_max] = small*mask
                 self.roiCoords[i] = [m_min,m_max,n_min,n_max]
-                self.binaryROIs[i] = self.binaryROIs[i]/np.amax(self.binaryROIs[i])
+                #self.binaryROIs[i] = self.binaryROIs[i]/np.amax(self.binaryROIs[i])
         else:
             cellpose = CellposeRunner(
                         model_type="cyto3",
@@ -1520,7 +1533,11 @@ class MainWindow(QtWidgets.QMainWindow):
         print(self.binaryROIs.shape)
         tif.imwrite(self.outputFolderPath+'/stacks/ROIs.tif', self.binaryROIs)
         all_rois = np.sum(self.binaryROIs, axis=0)
-        self.segmentedROIs.setImage(all_rois, axes = {'x':1, 'y':0})
+        #self.segmentedROIs.setImage(all_rois, axes = {'x':1, 'y':0})
+        self.segmentedContours.setImage(all_rois, axes = {'x':1, 'y':0}, autoLevels = True)
+
+    def view_FOV(self):
+        self.segmentedContours.setImage(self.averageImageRegistered, axes = {'x':1, 'y':0}, autoLevels = True)
 
 
     def remove_roi(self, roi):
@@ -1686,6 +1703,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def finished_extraction(self, results):
         save_data_path = os.path.join(self.outputFolderPath, 'saved')
         files = [f for f in os.listdir(save_data_path) if f.endswith('.npy')]
+        files.sort()  # Sort files to get the latest one
         file = files[-1]
         results = np.load(os.path.join(save_data_path, file), allow_pickle=True).item()
         self.resultsDict = results
@@ -1801,6 +1819,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.columnCoordinatesLabel.setText(_translate("MainWindow", "<html><head/><body><p><span style=\" font-size:12pt; text-decoration: underline;\">Column Coordinates</span><span style=\" font-size:12pt;\"> : </span><span style=\" font-size:12pt; font-weight:600;\">(Row2, Col2)</span></p></body></html>"))
         self.registeredImageTime.setText(_translate("MainWindow", "00:00/59:59"))
         self.applyModel.setText(_translate("MainWindow", "Segment"))
+        self.FOV.setText(_translate("MainWindow", "View FOV"))
         self.selectModel.setText(_translate("MainWindow", "Select Model"))
         self.extractTraceButton.setText(_translate("MainWindow", "Extract Neuronal Traces"))
         # self.manualSegment.setText(_translate("MainWindow", "Manual Segmentation"))
@@ -1892,21 +1911,21 @@ class ImportDataThread(QtCore.QThread):
         self.importFilePath = importFilePath
         self.tempFolderPath = tempFolderPath
         self.dsFactor = dsFactor
-        self.GPU_mode = GPU_mode
+        self.GPU_mode = GPU_mode*1
+        self.scriptPath = os.path.join(os.getcwd(), 'VIPER', 'import.py')
         
 
     def run(self):
-        try:
-            if os.path.exists(os.path.join(self.tempFolderPath, "raw_map.zarr")): # Overwrite old imported data
-                shutil.rmtree(os.path.join(self.tempFolderPath, "raw_map.zarr"))
-            rawData = import_data(self.importFilePath, self.tempFolderPath, self.dsFactor, self.GPU_mode)
-            
-        except Exception as e:
-            self.error.emit(str(e))
-            return
+
+        if os.path.exists(os.path.join(self.tempFolderPath, "raw_map.zarr")): # Overwrite old imported data
+            shutil.rmtree(os.path.join(self.tempFolderPath, "raw_map.zarr"))
+        if os.path.exists(os.path.join(self.tempFolderPath, "raw_map.sync")): # Overwrite old imported data
+            shutil.rmtree(os.path.join(self.tempFolderPath, "raw_map.sync"))
         
-        #self.progress.emit(-1)
-        self.finished.emit(rawData)
+        p = subprocess.Popen([sys.executable, str(self.scriptPath), str(self.importFilePath), str(self.tempFolderPath), str(self.dsFactor),str(self.GPU_mode)])
+        p.wait()
+
+        self.finished.emit("Import Completed")
 
 
 class CenteredItemDelegate(QtWidgets.QStyledItemDelegate):
@@ -1969,7 +1988,7 @@ class RemapDataThread(QtCore.QThread):
         
 
     def run(self):
-        script = os.path.normpath(os.getcwd()+'/VIPER/rechunk_data.py')
+        script = os.path.normpath(os.getcwd()+'/VIPER/rechunk.py')
         try:
             p = subprocess.Popen([sys.executable, str(script), str(self.registeredDataPath)])
             p.wait()

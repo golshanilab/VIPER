@@ -36,21 +36,23 @@ def context_region(clnmsk, pix_pad=0):
 def pb_correct(im_data,fs):
     medn = np.median(im_data,axis=0)
     im_data = (im_data - medn[np.newaxis,:])
-    bfilt,afilt = signal.butter(2, 1/3,'highpass', fs=fs)
+    bfilt,afilt = signal.butter(3, 1/3,'highpass', fs=fs)
     clean_data = signal.filtfilt(bfilt,afilt,im_data, axis=0)    
     return clean_data
 
 def define_background(imageData, box):
     # Define Background
     n,m = imageData[1].shape
-    t1 = box[0]-35
-    t2 = box[0]-40
-    b1 = box[1]+35
-    b2 = box[1]+40
-    l1 = box[2]-35
-    l2 = box[2]-40
-    r1 = box[3]+35
-    r2 = box[3]+40
+    height = int((box[1] - box[0]))
+    width = int((box[3] - box[2]))
+    t1 = box[0]-(height)
+    t2 = box[0]-(height+5)
+    b1 = box[1]+(height)
+    b2 = box[1]+(height+5)
+    l1 = box[2]-(width)
+    l2 = box[2]-(width+5)
+    r1 = box[3]+(width)
+    r2 = box[3]+(width+5)
     
     if t1 < 0:
         t1 = 0
@@ -93,9 +95,12 @@ def define_background(imageData, box):
     return bg_pix
 
 def background_svd(background_px, npc=4, lmd=0.01):
-    background_px = da.from_array(background_px)
+    n,m = background_px.shape
+    #background_px = da.from_array(background_px)
+    background_px = da.from_array(background_px,chunks=(n, 1))
     print(background_px)
     #U,Z,V = np.linalg.svd(background_px)
+    #U, Z, V = da.linalg.svd_compressed(background_px,k=10)
     U, Z, V = da.linalg.svd(background_px)
     U.compute()
     U = np.array(U)
@@ -108,146 +113,10 @@ def background_svd(background_px, npc=4, lmd=0.01):
     
     return Ub, UbT, b
 
-# def initial_extraction(imageData, ROIs, pole, fs=500):
-
-#     traces = np.zeros((len(ROIs),len(imageData)))
-#     masks = np.asarray([object]*len(ROIs), dtype=object)
-
-#     for i in range(len(ROIs)):
-#         mask = ROIs[i]
-#         row_min, row_max, col_min, col_max = context_region(mask,pix_pad=3)
-        
-#         mask = mask[row_min:row_max, col_min:col_max]
-#         context = imageData[:,row_min:row_max, col_min:col_max]
-
-#         if pole:
-#             context = -context
-
-#         context = pb_correct(context.reshape(len(context),-1),fs=fs)
-#         context = context.reshape(len(context),row_max-row_min,col_max-col_min)
-        
-#         trace = np.average(context*mask[np.newaxis,:,:],axis=(1,2))
-#         traces[i] = trace
-#         masks[i] = mask  
-
-#     results = {
-#         'Masks': masks,
-#         'DFF': traces,
-#         'SpikeTemplate': np.zeros((len(ROIs),11)),
-#         'SpikeSNR': np.zeros(len(ROIs))
-#         }
-    
-#     return results
-
-
-# def extract_source_trace(imageData, ROI, pole, fs=500, iters=3, thresh=6):
-#     box = context_region(ROI)
-#     mask = ROI[box[0]:box[1], box[2]:box[3]]
-#     context = imageData[:,box[0]:box[1], box[2]:box[3]]
-#     background = define_background(imageData,box)
-
-
-#     if pole:
-#         context = -context
-#         background = -background
-        
-#     context = pb_correct(context.reshape(len(context),-1),fs=fs)
-#     context = context.reshape(len(context),box[1]-box[0],box[3]-box[2])
-#     background = pb_correct(background,fs=fs)
-    
-#     # Initial Spike Detection Filter
-#     bfilt,afilt = signal.butter(3,3,'highpass',fs=fs)
-#     Ub, UbT, b = background_svd(background)
-
-#     for j in range(iters+1):
-#         # Extract first trace
-#         trace = context*mask[np.newaxis,:,:]
-#         trace = np.average(trace,axis=(1,2))
-        
-#         # Background Subtraction
-#         beta = np.matmul(np.matmul(b,UbT),trace)
-#         trace = trace - np.matmul(Ub,beta)
-        
-#         # Initial Spike Detection
-#         extract_spk_1 = np.copy(trace) - np.median(trace)
-#         extract_spk_1 = signal.filtfilt(bfilt,afilt,extract_spk_1)
-#         th = np.std(-extract_spk_1[extract_spk_1 < 0])*thresh
-#         spikeIdx = signal.find_peaks(extract_spk_1,height=th)[0]
-        
-#         # Create Initial Spike Template
-#         spk_win = 5
-#         spikes = spikeIdx[(spikeIdx > 10) & (spikeIdx < len(extract_spk_1)-10)]
-#         spk_mat = np.zeros((len(spikes),(2*spk_win)+1))
-        
-#         for k in range(len(spikes)):
-#             spk = np.copy(trace[spikes[k]-spk_win:spikes[k]+spk_win+1])
-#             spk_mat[k] = spk - np.amin(spk)
-            
-#         spk_template = np.average(spk_mat,axis=0)
-        
-#         spiketrain = np.zeros(len(trace))
-#         spiketrain[spikeIdx] = 1
-#         qq = signal.convolve(spiketrain, np.ones((2*spk_win)+1),'same')
-#         noise = extract_spk_1[qq<0.5]
-        
-#         # Signal pre-whiten from welch spectral analysis
-#         freq,pxx = signal.welch(noise,nfft=len(extract_spk_1))
-#         pxx = np.sqrt(pxx)
-        
-#         if len(trace)%2 == 0:
-#             pxx = np.append(pxx[:-1],np.flip(pxx[:-1]))
-#         else:
-#             pxx = np.append(pxx,np.flip(pxx[:-1])) 
-        
-#         # Pre-whiten signal
-#         extract_spk_1 = np.fft.fft(np.copy(extract_spk_1))/pxx
-#         extract_spk_1 = np.real(np.fft.ifft(extract_spk_1))
-        
-#         spk_mat = np.zeros((len(spikes),(2*spk_win)+1))
-        
-#         for k in range(len(spikes)):
-#             spk = np.copy(extract_spk_1[spikes[k]-spk_win:spikes[k]+spk_win+1])
-#             spk_mat[k] = spk - np.amin(spk)
-            
-#         # Match filter spike extraction from whitened signal
-#         match_temp = np.average(spk_mat,axis=0)
-#         extract_spk_1 = signal.correlate(extract_spk_1,match_temp,'same') 
-#         th = np.std(-extract_spk_1[extract_spk_1 < 0])*(thresh*(3/4))
-#         spikeIdx = signal.find_peaks(extract_spk_1,height=th)[0]
-        
-#         if len(spikeIdx) < 1:
-#             snr = 0
-#             print("No Spikes Detected")
-#             break
-        
-#         if j == range(iters+1)[-1]:    
-#             spiketrain = np.zeros(len(trace))
-#             spiketrain[spikeIdx] = 1
-#             qq = signal.convolve(spiketrain, np.ones((2*spk_win)+1),'same')
-#             sign = np.amax(spk_template) - np.amin(spk_template)
-#             nois = np.std(trace[qq<0.5])
-#             snr = sign/nois
-#             break
-        
-#         # Reconstruct trace from spike template
-#         spiketrain = np.zeros(len(trace))
-#         spiketrain[spikeIdx] = 1
-#         trec = signal.convolve(spiketrain,spk_template, 'same')
-        
-#         # Refine Spatial Footprint
-#         context = context.reshape(len(context),-1)
-#         solver_params = sparse.linalg.lsmr(context,trec, damp=0.01, maxiter=1)
-#         mask = solver_params[0]
-#         mask[mask < np.average(mask)/2] = 0
-#         mask = mask/np.amax(mask)
-#         mask = np.reshape(mask,(box[1]-box[0],box[3]-box[2]))
-#         context = np.reshape(context,(len(context),box[1]-box[0],box[3]-box[2]))
-    
-#     return mask, trace, spikeIdx, spk_template, snr
 
 
 
-def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
+def trace_extraction(imageData, ROIs, pole, fs, iters=6, thresh=6):
     
     # Initialize Outputs
     final_masks = np.asarray([object]*len(ROIs), dtype=object)
@@ -259,7 +128,7 @@ def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
     for i in range(len(ROIs)):
         # Focus on Region of Interest
         mask = ROIs[i]
-        row_min, row_max, col_min, col_max = context_region(mask,pix_pad=5)
+        row_min, row_max, col_min, col_max = context_region(mask,pix_pad=2)
         
         mask = mask[row_min:row_max, col_min:col_max]
         context = imageData[:,row_min:row_max, col_min:col_max]
@@ -276,7 +145,7 @@ def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
         background = pb_correct(background,fs=fs)
         
         # Initial Spike Detection Filter
-        bfilt,afilt = signal.butter(3,3,'highpass',fs=fs)
+        bfilt,afilt = signal.butter(3,9,'highpass',fs=fs)
         Ub, UbT, b = background_svd(background)
         print('background')
 
@@ -296,7 +165,7 @@ def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
             # Initial Spike Detection
             extract_spk_1 = np.copy(trace) - np.median(trace)
             extract_spk_1 = signal.filtfilt(bfilt,afilt,extract_spk_1)
-            th = np.std(-extract_spk_1[extract_spk_1 < 0])*thresh
+            th = np.std(np.abs(extract_spk_1))*thresh
             spikeIdx = signal.find_peaks(extract_spk_1,height=th)[0]
             
             # Create Initial Spike Template
@@ -313,10 +182,10 @@ def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
             spiketrain = np.zeros(len(trace))
             spiketrain[spikeIdx] = 1
             qq = signal.convolve(spiketrain, np.ones((2*spk_win)+1),'same')
-            noise = extract_spk_1[qq<0.5]
+            noise = trace[qq<0.5]
             
             # Signal pre-whiten from welch spectral analysis
-            freq,pxx = signal.welch(noise,nfft=len(extract_spk_1))
+            freq,pxx = signal.welch(noise,nfft=len(trace))
             pxx = np.sqrt(pxx)
             
             if len(trace)%2 == 0:
@@ -325,7 +194,7 @@ def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
                 pxx = np.append(pxx,np.flip(pxx[:-1])) 
             
             # Pre-whiten signal
-            extract_spk_1 = np.fft.fft(np.copy(extract_spk_1))/pxx
+            extract_spk_1 = np.fft.fft(np.copy(trace))/pxx
             extract_spk_1 = np.real(np.fft.ifft(extract_spk_1))
             
             spk_mat = np.zeros((len(spikes),(2*spk_win)+1))
@@ -337,7 +206,7 @@ def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
             # Match filter spike extraction from whitened signal
             match_temp = np.average(spk_mat,axis=0)
             extract_spk_1 = signal.correlate(extract_spk_1,match_temp,'same') 
-            th = np.std(-extract_spk_1[extract_spk_1 < 0])*(thresh*(3/4))
+            th = np.std(np.abs(extract_spk_1))*(thresh*(3/4))
             spikeIdx = signal.find_peaks(extract_spk_1,height=th)[0]
             
             if len(spikeIdx) < 1:
@@ -363,8 +232,8 @@ def trace_extraction(imageData, ROIs, pole, fs, iters=3, thresh=6):
             context = context.reshape(len(context),-1)
             solver_params = sparse.linalg.lsmr(context,trec, damp=0.01, maxiter=1)
             mask = solver_params[0]
-            mask[mask < np.average(mask)/2] = 0
             mask = mask/np.amax(mask)
+            mask[mask < 0.05] = 0
             mask = np.reshape(mask,(row_max-row_min,col_max-col_min))
             context = np.reshape(context,(len(context),row_max-row_min,col_max-col_min))
             

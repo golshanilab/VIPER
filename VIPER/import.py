@@ -14,8 +14,7 @@ except:
 import tifffile as tif
 import glob
 import multiprocessing
-import subprocess
-import traceback
+import sys
 
 def downsample2d(inputArray, kernelSize, gpu_mode=False):
 
@@ -88,7 +87,7 @@ def downsample3d(inputArray, kernelSize, gpu_mode=False):
 
 
 
-def load_avi(fname, ds, gpu_mode=False):
+def load_avi(fname, ds, tempFolder, gpu_mode=False):
     '''
     Load .avi data and create a memory mapped file
 
@@ -115,8 +114,9 @@ def load_avi(fname, ds, gpu_mode=False):
     if ds > 1:
         n = int(n/ds)
         m = int(m/ds)
+        gray = downsample2d(gray, ds)
         
-    mapped_file_path = fname.split('.')[0] + '_raw_map.zarr'
+    mapped_file_path = os.path.normpath(tempFolder + '/raw_map.zarr')
     imageData = zarr.open(mapped_file_path, mode='a', shape=(length,n,m), chunks=(1,n,m), dtype = data_type) # Create memory mapped file
     imageData[0, :, :] = gray
     # Load video frames into mapped file
@@ -135,87 +135,105 @@ def load_avi(fname, ds, gpu_mode=False):
     
     return imageData
 
+def map_frames(imageData, start_idx, files, fname, ds, gpu_mode):
+    
+    for i, file in enumerate(files):
+        image = tif.imread(os.path.join(fname, file))
+        if ds > 1:
+            if gpu_mode:
+                image = downsample2d(cp.array(image), ds, gpu_mode=gpu_mode)
+                imageData[start_idx+i, :, :] = cp.asnumpy(image)
+            else:
+                image = downsample2d(image, ds, gpu_mode=gpu_mode)
+                imageData[start_idx+i, :, :] = image
+        else:
+            imageData[start_idx+i, :, :] = image
 
 
-def import_data(directory,temp, ds=1, GPU_mode=False):
+
+if __name__ == "__main__":
+
+    importPath = str(sys.argv[1])
+    tempPath = str(sys.argv[2])
+    ds = int(sys.argv[3])
+    gpu_mode = bool(int(sys.argv[4]))
 
     # Check for different file formats and load the data
-    dirs = directory.split("/")
+    dirs = importPath.split("/")
     dirs = dirs[-1]
 
     # Load data from .tiff stack
-    if (glob.glob(directory+'/*.tiff')) or (glob.glob(directory+'/*.tif')):
+    if (glob.glob(importPath+'/*.tiff')) or (glob.glob(importPath+'/*.tif')):
         #byte_size = 50e6 # Mapped file chunk size in bytes (50 MB)
 
-        data_path = glob.glob(directory+'/*.tif')[0]
+        data_path = glob.glob(importPath+'/*.tif')[0]
         store = tif.imread(data_path, aszarr=True)
         rawData = zarr.open(store, mode='r')
         t,n,m = rawData.shape
         data_type = rawData.dtype
         frame = rawData[0]
         #frames_per_chunk = int(byte_size/(frame.size*frame.itemsize))
-        mapped_file_path = directory + '/raw_map.zarr'
+        mapped_file_path = tempPath + '/raw_map.zarr'
 
         if ds > 1:
             n = int(n/ds)
             m = int(m/ds)
             imageData = zarr.open(mapped_file_path, mode='a', shape=(t,n,m), chunks=(1,n,m), dtype = data_type)
             for i in range(t):
-                if GPU_mode:
-                    imageData[:,] = cp.asnumpy(downsample2d(cp.array(rawData[i,:,:]), ds, gpu_mode=GPU_mode))
+                if gpu_mode:
+                    imageData[:,] = cp.asnumpy(downsample2d(cp.array(rawData[i,:,:]), ds, gpu_mode=gpu_mode))
                 else:
-                    imageData[:,] = downsample2d(rawData[i,:,:], ds, gpu_mode=GPU_mode)
+                    imageData[:,] = downsample2d(rawData[i,:,:], ds, gpu_mode=gpu_mode)
         else:
             imageData = rawData
             
     # Load data from .avi file          
-    if glob.glob(directory+'/*.avi'):
-        data_path = glob.glob(directory+'/*.avi')[0]
-        imageData = load_avi(data_path,ds, gpu_mode=GPU_mode)
+    if glob.glob(importPath+'/*.avi'):
+        data_path = glob.glob(importPath+'/*.avi')[0]
+        imageData = load_avi(data_path,ds,tempPath, gpu_mode=gpu_mode)
 
     # Load data from .tif directory
-    if glob.glob(directory+'/'+dirs):
-        data_path = os.path.normpath(glob.glob(directory+'/'+dirs)[0])
-        directory = os.path.normpath(directory)
-        script_path = os.path.normpath(os.getcwd()+'/VIPER/import_tif_dir.py')
-        #command_string = activate_path+' python '+script_path+' '+data_path+' '+directory+' '+str(ds)+' '+str(GPU_mode)
-        try:
-            p = subprocess.Popen([sys.executable, str(script_path), str(data_path), str(directory), str(ds), str(GPU_mode), str(temp)])
-            p.wait()
-        except Exception as e:
-            print(e)
-            print(traceback.format_exc())
+    if glob.glob(importPath+'/'+dirs):
+        fname = os.path.normpath(importPath+'/'+dirs)
+        files = [f for f in os.listdir(fname) if f.endswith('.tif')]
+        files.sort(key=lambda x: '{0:0>15}'.format(x).lower())
+        length = len(files)
+        cores = multiprocessing.cpu_count()
 
-        imageData = os.path.normpath(temp+'/raw_map.zarr')
-        imageData = zarr.open(imageData, mode='r')
+        if cores > 12:
+            cores = 12
 
-    chunks = chunk_data(imageData)
+        files_per_core = int(length // cores)
+        frame = tif.imread(os.path.join(fname, files[0]))
+        n, m = frame.shape
+        data_type = frame.dtype
+
+        if ds > 1:
+            n = int(n / ds)
+            m = int(m / ds)
+
+        mapped_file_path = os.path.normpath(tempPath + '/raw_map.zarr')
+        #synchronizer = os.path.normpath(tempPath + '/raw_map.sync')
+        #synchronizer = zarr.ProcessSynchronizer(synchronizer)
+        #imageData = zarr.open_array(mapped_file_path, mode='a', shape=(length, n, m), chunks=(1, n, m), dtype=data_type, synchronizer=synchronizer)
+        imageData = zarr.open_array(mapped_file_path, mode='a', shape=(length, n, m), chunks=(1, n, m), dtype=data_type)
+
+
+        # Load frames into mapped file using multiprocessing
+        procs = np.empty(cores,dtype=object)
         
-    data_and_chunks = {
-        'MappedData':imageData,
-        'MaxChunkMem':chunks[2],
-        'ChunkNum':chunks[0],
-        'FramesPerChunk': chunks[1],
-        }
-        
-    return data_and_chunks
+        for i in range(cores):
 
-def chunk_data(imageData):
-    
-    max_memory = int(2e9)  # 2GB
-    
-    t,m,n = imageData.shape
-    frame = imageData[0]
-    frame_data_size = frame.size*frame.itemsize #frame in bytes
-    
-    frames_per_chunk = int(max_memory//frame_data_size)
-    num_chunks = int(t//frames_per_chunk)
-    
-    if num_chunks < t/frames_per_chunk:
-        num_chunks = int(num_chunks+1)
-    
-    
-    return np.array([num_chunks,frames_per_chunk,max_memory])
+            if i < cores-1:
+                procs[i] = multiprocessing.Process(target=map_frames,args=(imageData,files_per_core*i,files[files_per_core*i:files_per_core*(i+1)], fname, ds, gpu_mode))
 
+            else:
+                procs[i] = multiprocessing.Process(target=map_frames,args=(imageData,files_per_core*i,files[files_per_core*i:], fname, ds, gpu_mode))
+
+            procs[i].start()
+
+
+        for i in range(cores):
+            procs[i].join()
 
 
